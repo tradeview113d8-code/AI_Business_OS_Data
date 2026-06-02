@@ -28,6 +28,9 @@ collections = [
     # Users & config
     "users", "config",
     "personal_knowledge",
+    "api_keys_raw",
+    "api_keys_refined",
+    "api_channels",
 ]
 
 for c in collections:
