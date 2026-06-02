@@ -33,7 +33,14 @@ collections = [
     "api_channels",
 ]
 
+created_count = 0
 for c in collections:
-    db[c]
+    try:
+        db.create_collection(c)
+        created_count += 1
+    except Exception as e:
+        # Collection may already exist
+        if "already exists" not in str(e):
+            print(f"Warning creating {c}: {e}")
 
-print(f"Bootstrap Complete — {len(collections)} collections ready")
+print(f"Bootstrap Complete — {len(collections)} collections ready ({created_count} newly created)")
