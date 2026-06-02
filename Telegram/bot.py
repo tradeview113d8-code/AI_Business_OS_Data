@@ -34,7 +34,7 @@ def check_permission(message):
     return True
 
 # ==========================================
-# 🛠 KHU VỰC CẤU HÌNH GIAO DIỆN NÚT BẤM
+# 🛠 KHU VỰC CẤU HÌNH GIAO DIỆN NÚT BẤMm
 # ==========================================
 
 def get_main_menu():
