@@ -56,6 +56,19 @@ fi
 
 print_success "Python3 is available: $(python3 --version)"
 
+# Check if Core modules exist
+if [ ! -d "Core" ]; then
+    print_error "Core directory not found!"
+    exit 1
+fi
+
+if [ ! -f "Core/mongo.py" ]; then
+    print_error "Core/mongo.py not found!"
+    exit 1
+fi
+
+print_success "Core modules found"
+
 # Check dependencies
 print_header "Checking Python Dependencies"
 
@@ -65,7 +78,7 @@ for package in "${required_packages[@]}"; do
         print_success "$package is installed"
     else
         print_warning "$package not found - installing..."
-        pip install "$package"
+        pip3 install "$package" || pip install "$package"
     fi
 done
 
@@ -94,20 +107,24 @@ sleep 1
 # Step 3: Test Workers
 print_header "Step 3: Testing Workers"
 
-echo -e "\n${YELLOW}Testing key_refiner worker...${NC}"
-if python3 Workers/key_refiner.py 2>&1 | head -20; then
-    print_success "key_refiner worker executed"
+if [ ! -d "Workers" ]; then
+    print_warning "Workers directory not found - skipping worker tests"
 else
-    print_warning "key_refiner worker encountered an issue (may be normal if no keys to process)"
-fi
+    echo -e "\n${YELLOW}Testing key_refiner worker...${NC}"
+    if python3 Workers/key_refiner.py 2>&1 | head -20; then
+        print_success "key_refiner worker executed"
+    else
+        print_warning "key_refiner worker encountered an issue (may be normal if no keys to process)"
+    fi
 
-sleep 1
+    sleep 1
 
-echo -e "\n${YELLOW}Testing oneapi_sync worker...${NC}"
-if python3 Workers/oneapi_sync.py 2>&1 | head -20; then
-    print_success "oneapi_sync worker executed"
-else
-    print_warning "oneapi_sync worker encountered an issue (may be normal if no keys to sync)"
+    echo -e "\n${YELLOW}Testing oneapi_sync worker...${NC}"
+    if python3 Workers/oneapi_sync.py 2>&1 | head -20; then
+        print_success "oneapi_sync worker executed"
+    else
+        print_warning "oneapi_sync worker encountered an issue (may be normal if no keys to sync)"
+    fi
 fi
 
 # Step 4: Summary
