@@ -31,5 +31,17 @@ db.events.create_index(
     expireAfterSeconds=2592000
 )
 db.events.create_index("event_type")
+# OneAPI collections
+db.api_keys_raw.create_index("status")
+db.api_keys_raw.create_index("created_at")
+db.api_keys_raw.create_index("source")
+
+db.api_keys_refined.create_index("raw_key_id", unique=True)
+db.api_keys_refined.create_index("provider")
+db.api_keys_refined.create_index("status")
+
+db.api_channels.create_index([("raw_key_id", 1), ("model", 1)], unique=True)
+db.api_channels.create_index("enabled")
+db.api_channels.create_index("provider")
 
 print("Index setup complete.")
