@@ -4,3 +4,4 @@ pyTelegramBotAPI
 PyGithub
 dnspython
 requests
+flask
