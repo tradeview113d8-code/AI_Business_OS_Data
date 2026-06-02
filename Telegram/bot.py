@@ -1,107 +1,284 @@
 from pathlib import Path
 import sys
 import os
-import json
-from dotenv import load_dotenv
-
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-load_dotenv(override=True)
-
-import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import datetime
 
-# Load config
-from Core.config import TELEGRAM_TOKEN
+# Đồng bộ hóa đường dẫn để nhận diện thư mục Core và Telegram
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import telebot
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+
+# Import các thành phần lõi từ V5 kiến trúc của bạn
 from Core.mongo import db
+from Core.config import TELEGRAM_TOKEN
+from Core.job_queue import create_job, queue_stats
+from Core.event_bus import publish, EventType, pending_count
+from Core.audit import audit
+
+# Import 2 module phân quyền và chống spam bạn vừa tạo thủ công
 from Telegram.auth import is_admin
 from Telegram.rate_limiter import rate_limit
 
-# Validate token
-if not TELEGRAM_TOKEN:
-    print("❌ ERROR: TELEGRAM_TOKEN not configured!")
-    print("Please add TELEGRAM_TOKEN or TELEGRAM_BOT_TOKEN to .env")
-    exit(1)
-
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-def check_auth(message):
-    """Check rate limit and admin authorization"""
+def check_permission(message):
+    """Hàm kiểm tra bảo mật trước khi thực thi bất kỳ lệnh nào"""
     if not rate_limit(message.from_user.id):
-        bot.reply_to(message, "⏳ Hệ thống đang bận, vui lòng thử lại sau.")
+        bot.reply_to(message, "⏳ Chậm lại một chút, hệ thống chống spam đang kích hoạt...")
         return False
     if not is_admin(message.from_user.id):
-        bot.reply_to(message, f"⛔️ Từ chối: Bạn không có quyền Admin (ID: {message.from_user.id})")
+        bot.reply_to(message, "⛔️ Bạn không có quyền truy cập hệ thống quản trị này.")
         return False
     return True
 
+# ==========================================
+# 🛠 KHU VỰC CẤU HÌNH GIAO DIỆN NÚT BẤM
+# ==========================================
+
 def get_main_menu():
-    """Get main keyboard menu"""
+    """Tạo bàn phím ghim cố định ở dưới đáy màn hình (Reply Keyboard)"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(KeyboardButton("💡 Thêm Ý Tưởng"), KeyboardButton("🚀 Triển Khai (Deploy)"))
-    markup.add(KeyboardButton("📊 Thống Kê"), KeyboardButton("⚙️ Quản Trị Hệ Thống"))
+    markup.add(
+        KeyboardButton("💡 Thêm Ý Tưởng"),
+        KeyboardButton("🚀 Triển Khai (Deploy)")
+    )
+    markup.add(
+        KeyboardButton("📊 Thống Kê"),
+        KeyboardButton("📑 Xem Báo Cáo")
+    )
+    markup.add(
+        KeyboardButton("🔑 Nạp API Key"),
+        KeyboardButton("⚙️ Menu Quản Trị (Admin)")
+    )
     return markup
 
-def audit(user_id, action, target_id, metadata=None):
-    """Log audit event to database"""
-    try:
-        db.audit_logs.insert_one({
-            "user_id": user_id,
-            "action": action,
-            "target_id": str(target_id),
-            "metadata": metadata or {},
-            "timestamp": datetime.utcnow()
-        })
-    except Exception as e:
-        print(f"Warning: Error logging audit: {e}")
+def get_admin_inline_menu():
+    """Tạo nút bấm tương tác đính kèm tin nhắn (Inline Keyboard)"""
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("📋 Danh sách Jobs", callback_data="admin_jobs"),
+        InlineKeyboardButton("💀 Dead Jobs", callback_data="admin_dead")
+    )
+    markup.row(
+        InlineKeyboardButton("🚌 Event Bus", callback_data="admin_events"),
+        InlineKeyboardButton("🔌 Plugins Registry", callback_data="admin_plugins")
+    )
+    markup.row(
+        InlineKeyboardButton("🩺 Trạng thái Workers (Health)", callback_data="admin_health")
+    )
+    return markup
 
 # ==========================================
-# Command Handlers
+# 📡 BỘ LẮNG NGHE LỆNH CHÍNH (MAIN LISTENERS)
 # ==========================================
 
-@bot.message_handler(commands=['start', 'menu'])
+@bot.message_handler(commands=["start"])
 def start(message):
-    """Start command - show main menu"""
-    if not check_auth(message):
-        return
-    bot.send_message(message.chat.id, "🤖 AI BUSINESS OS V5.1 - ONLINE", reply_markup=get_main_menu())
+    if not check_permission(message): return
+    bot.send_message(
+        message.chat.id, 
+        "🤖 **AI BUSINESS OS V5 ONLINE**\n\nHệ thống Core Bus và Dây chuyền Workers đã thông suốt.\nVui lòng chọn tác vụ điều phối bên dưới:", 
+        reply_markup=get_main_menu(),
+        parse_mode="Markdown"
+    )
 
-@bot.message_handler(func=lambda m: m.text == "🚀 Triển Khai (Deploy)")
-def deploy(message):
-    """Deploy button handler"""
-    if not check_auth(message):
-        return
-    try:
-        from Core.job_queue import create_job
-        job = create_job("github_sync", {"action": "manual_deploy", "user": message.from_user.username})
-        bot.reply_to(message, f"✅ Đã tạo Job triển khai mới: {job.inserted_id}")
-        audit(message.from_user.id, "deploy_request", job.inserted_id)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Lỗi: {str(e)}")
+@bot.message_handler(func=lambda message: message.text in [
+    "💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"
+])
+def handle_main_menu(message):
+    if not check_permission(message): return
+    
+    text = message.text
+    if text == "💡 Thêm Ý Tưởng":
+        idea(message)
+    elif text == "🚀 Triển Khai (Deploy)":
+        deploy_job(message)
+    elif text == "📊 Thống Kê":
+        stats(message)
+    elif text == "📑 Xem Báo Cáo":
+        report(message)
+    elif text == "🔑 Nạp API Key":
+        ask_key_name(message)
+    elif text == "⚙️ Menu Quản Trị (Admin)":
+        bot.send_message(
+            message.chat.id, 
+            "🛠 **Khu vực giám sát & Điều phối kỹ thuật:**", 
+            reply_markup=get_admin_inline_menu(),
+            parse_mode="Markdown"
+        )
 
-@bot.message_handler(func=lambda m: m.text == "📊 Thống Kê")
+# Lắng nghe và điều hướng các nút bấm Inline của khu vực Admin
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
+def handle_admin_callbacks(call):
+    if not is_admin(call.from_user.id): return
+    
+    action = call.data
+    if action == "admin_jobs":
+        jobs_list(call.message)
+    elif action == "admin_dead":
+        dead_jobs(call.message)
+    elif action == "admin_events":
+        event_bus_status(call.message)
+    elif action == "admin_plugins":
+        plugins_list(call.message)
+    elif action == "admin_health":
+        workers_health(call.message)
+        
+    # Xóa biểu tượng xoay tròn loading trên nút bấm Telegram sau khi tương tác xong
+    bot.answer_callback_query(call.id)
+
+# ==========================================
+# 📥 LUỒNG NHẬP LIỆU Ý TƯỞNG VÀ SÁNG KIẾN
+# ==========================================
+
+@bot.message_handler(commands=["idea"])
+def idea(message):
+    if not check_permission(message): return
+    msg = bot.reply_to(message, "📝 Nhập Yêu cầu / Ý tưởng thô mới của sếp:")
+    bot.register_next_step_handler(msg, save_request)
+
+def save_request(message):
+    prompt_text = message.text.strip() if message.text else ""
+    
+    # Chốt chặn nếu nhấn nút khác thay vì gõ text
+    if prompt_text in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+        handle_main_menu(message)
+        return
+
+    request_id = db.requests.insert_one({
+        "prompt":     prompt_text,
+        "status":     "new",
+        "created_by": message.from_user.id,
+        "created_at": datetime.utcnow()
+    }).inserted_id
+    
+    create_job("analyze_request", {"request_id": str(request_id)}, created_by=message.from_user.id)
+    publish(EventType.REQUEST_RECEIVED, "bot", {"request_id": str(request_id)})
+    audit(message.from_user.id, "create_request", request_id)
+    
+    bot.reply_to(message, f"✅ **Ghi nhận Yêu cầu thành công**\nID: `{request_id}`\n\n*Hàng đợi GitHub Actions sẽ xử lý trong mẻ tiếp theo.*", parse_mode="Markdown")
+
+# ==========================================
+# 🔑 LUỒNG NẠP API KEY VÀ CẤU HÌNH (V5.1 SAFE)
+# ==========================================
+
+def ask_key_name(message):
+    msg = bot.reply_to(message, "🎯 **Bước 1:** Nhập TÊN GỢI NHỚ cho API Key (Ví dụ: `Gemini_Free_01`, `Groq_Chính`):", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, ask_key_value)
+
+def ask_key_value(message):
+    key_name = message.text.strip() if message.text else ""
+    
+    # BẢO VỆ CẤU TRÚC LUỒNG: Nếu bấm nút khác, thoát ngay lập tức không để đơ bot
+    if key_name.startswith("/") or key_name in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+        handle_main_menu(message)
+        return
+
+    msg = bot.reply_to(message, f"🔑 **Bước 2:** Hãy dán chuỗi **API Key thô** của nguồn `{key_name}` vào đây:", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, save_raw_key_handler, key_name)
+
+def save_raw_key_handler(message, key_name):
+    raw_key = message.text.strip() if message.text else ""
+    
+    if not raw_key or raw_key in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+        bot.reply_to(message, "❌ Đã hủy bỏ quy trình nạp Key do dữ liệu không hợp lệ.")
+        return
+
+    # Lưu trữ vào ngăn chứa thô api_keys_raw
+    key_id = db.api_keys_raw.insert_one({
+        "name":       key_name,
+        "key":        raw_key,
+        "status":     "raw",
+        "created_by": message.from_user.id,
+        "created_at": datetime.utcnow()
+    }).inserted_id
+    
+    publish(EventType.REQUEST_RECEIVED, "bot", {"action": "raw_key_added", "key_id": str(key_id)})
+    audit(message.from_user.id, "add_raw_key", key_id)
+    
+    bot.reply_to(message, f"✅ **Nạp thành công API Key thô**\nTên: `{key_name}`\nID: `{key_id}`\n\n*Worker Key Refiner trên GitHub sẽ tinh chỉnh và quét model khả dụng.*", parse_mode="Markdown")
+
+# ==========================================
+# 📊 CÁC HÀM TRUY VẤN VÀ THỰC THI (CORE FUNCTIONS)
+# ==========================================
+
+def deploy_job(message):
+    """Tạo tác vụ Deploy trực tiếp vào MongoDB giống hệt ảnh mẫu của sếp"""
+    job_id = db.jobs.insert_one({
+        "type": "deploy", 
+        "status": "pending", 
+        "created_at": datetime.utcnow()
+    }).inserted_id
+    bot.reply_to(message, f"🚀 **Job Created in MongoDB Successfully:**\nID: `{job_id}`", parse_mode="Markdown")
+
 def stats(message):
-    """Statistics button handler"""
-    if not check_auth(message):
-        return
-    try:
-        from Core.job_queue import queue_stats
-        s = queue_stats()
-        bot.reply_to(message, f"📊 Trạng thái Queue:\n- Đang chờ: {s['pending']}\n- Đang xử lý: {s['processing']}\n- Hoàn tất: {s['completed']}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Lỗi: {str(e)}")
+    s = queue_stats()
+    e_pending = db.events.count_documents({"status": "pending"})
+    e_dead    = db.events.count_documents({"status": "dead"})
+    bot.send_message(message.chat.id, f"""📊 **TRẠNG THÁI HỆ THỐNG OPERATING SYSTEM**
 
-@bot.message_handler(commands=['schedule'])
-def schedule_task(message):
-    """Schedule a task with JSON payload"""
-    if not check_auth(message):
+🔹 **Hàng đợi Tác vụ (Jobs Queues):**
+  - Chờ xử lý (Pending): `{s['pending']}`
+  - Đang chạy (Processing): `{s['processing']}`
+  - Hoàn thành (Completed): `{s['completed']}`
+  - Bị lỗi kẹt (Dead): `{s['dead']}`
+
+🔸 **Trục Sự kiện (Event Bus):**
+  - Sự kiện chờ xử lý: `{e_pending}`
+  - Sự kiện lỗi (Dead): `{e_dead}`""", parse_mode="Markdown")
+
+def report(message):
+    r = db.reports.find_one(sort=[("created_at", -1)])
+    if not r:
+        bot.send_message(message.chat.id, "📭 Hệ thống chưa có bản báo cáo tri thức nào được xuất bản.")
         return
-    try:
-        parts = message.text.split(maxsplit=2)
-        if len(parts) < 3:
-            bot.reply_to(message, "❌ Format: /schedule <type> <json_payload>")
-            return
+    content = r.get("content", "")
+    bot.send_message(message.chat.id, content[-3500:] if len(content) > 3500 else content)
+
+# Các hàm bổ trợ đọc sâu dữ liệu trong kho MongoDB hiển thị cho Admin
+def jobs_list(message):
+    rows = [f"• `{j['_id']}` | {j['type']} | `{j['status']}`" 
+            for j in db.jobs.find().sort("created_at", -1).limit(10)]
+    bot.send_message(message.chat.id, "📋 **10 Tác vụ gần nhất trong Database:**\n\n" + "\n".join(rows) if rows else "📭 Không có Jobs nào.", parse_mode="Markdown")
+
+def dead_jobs(message):
+    dead_list = list(db.dead_letter_queue.find().sort("failed_at", -1).limit(5))
+    if not dead_list:
+        bot.send_message(message.chat.id, "✅ Sạch sẽ! Hệ thống không phát hiện lỗi kẹt tác vụ nào.")
+        return
+    rows = [f"❌ ID: `{d.get('job_id')}`\nLoại: `{d.get('job_type')}`\nLỗi: `{str(d.get('error'))[:70]}`\n---" for d in dead_list]
+    bot.send_message(message.chat.id, "💀 **Danh sách Dead Jobs:**\n\n" + "\n".join(rows), parse_mode="Markdown")
+
+def event_bus_status(message):
+    rows = []
+    for et in ["request_received", "analysis_done", "knowledge_ready", "report_written", "report_exported"]:
+        count = pending_count(et)
+        rows.append(f"• `{et}`: **{count}** pending")
+    bot.send_message(message.chat.id, "🚌 **Tình trạng lưu lượng Event Bus:**\n\n" + "\n".join(rows), parse_mode="Markdown")
+
+def plugins_list(message):
+    rows = [f"🔌 {p['event_type']} → `{p['plugin']}` [{p['status']}]" for p in db.plugin_registry.find()]
+    bot.send_message(message.chat.id, "🔌 **Danh sách Plugins đang đăng ký lõi:**\n\n" + "\n".join(rows) if rows else "📭 Chưa đăng ký plugin nào.", parse_mode="Markdown")
+
+def workers_health(message):
+    rows = [f"👤 {w['worker']} | `状态: {w['status']}` | Chạy cuối: {w['last_seen'].strftime('%H:%M:%S') if w.get('last_seen') else 'N/A'}" for w in db.health.find()]
+    bot.send_message(message.chat.id, "🩺 **Tình trạng sức khỏe dàn Workers:**\n\n" + "\n".join(rows) if rows else "📭 Chưa bắt được tín hiệu liên lạc của Worker nào.", parse_mode="Markdown")
+
+# ==========================================
+# 🚀 KÍCH HOẠT TIẾN TRÌNH LUỒNG (RUN)
+# ==========================================
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🚀 Telegram Commander V5 Menu Interactive - RUNNING")
+    print("=" * 50)
+    # skip_pending=True giúp bot bỏ qua những tin nhắn cũ bị dồn ứ trong lúc ngắt kết nối
+    bot.infinity_polling(skip_pending=True)
         
         payload = json.loads(parts[2])
         db.scheduled_tasks.insert_one({
