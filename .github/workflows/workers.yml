@@ -1,0 +1,59 @@
+name: AI Core Workers
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # Tự động chạy mỗi 15 phút
+  workflow_dispatch: # Bấm chạy bằng tay
+
+jobs:
+  workers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Dependencies
+        run: |
+          pip install pymongo python-dotenv PyGithub requests telebot
+
+      - name: 1. Task Analyzer (Phân tích Yêu cầu)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python Workers/task_analyzer.py
+
+      - name: 2. Report Writer (Viết Báo cáo)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python Workers/report_writer.py
+
+      - name: 3. GitHub Sync (Lưu Trí nhớ Dài hạn)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Đã hardcode thẳng thông tin kho chứa để tránh lỗi biến
+          GITHUB_OWNER: "tradeview113d8-code"
+          GITHUB_REPO: "AI_Business_OS_Data"
+        run: python Workers/github_sync.py
+
+      - name: 4. Health Monitor & Cleaner (Dọn dẹp & Bắt mạch)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python Workers/health_monitor.py
+          python Workers/cleaner.py
+
+      - name: 5. Telegram Notifier (Báo cáo về Telegram)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          # Hardcode luôn DB_NAME và ADMIN_IDS để đảm bảo worker này không bị lỗi
+          DB_NAME: "business_os_v5"
+          ADMIN_IDS: "1855388504"
+        run: python Workers/notifier.py
+        
