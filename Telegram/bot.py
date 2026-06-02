@@ -63,5 +63,42 @@ def schedule_task(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Lỗi format: {str(e)}")
 
+
+# ==========================================
+# /apikey - Thêm API Key
+# ==========================================
+@bot.message_handler(commands=["apikey"])
+def apikey(message):
+    if not check(message): return
+    msg = bot.reply_to(message, "🔑 Nhập tên gợi nhớ cho API Key (VD: Gemini_Free_01):")
+    bot.register_next_step_handler(msg, get_key_name)
+
+def get_key_name(message):
+    name = message.text.strip()
+    if not name:
+        bot.reply_to(message, "Tên không hợp lệ. Hãy dùng /apikey để thử lại.")
+        return
+    msg = bot.reply_to(message, f"📎 Dán API Key cho **{name}**:")
+    bot.register_next_step_handler(msg, lambda m: save_api_key(m, name))
+
+def save_api_key(message, name):
+    api_key = message.text.strip()
+    if len(api_key) < 10:
+        bot.reply_to(message, "API Key quá ngắn, không hợp lệ.")
+        return
+    doc = {
+        "name": name,
+        "key": api_key,
+        "status": "raw",
+        "source": "telegram",
+        "created_by": message.from_user.id,
+        "created_at": datetime.utcnow()
+    }
+    result = db.api_keys_raw.insert_one(doc)
+    from Core.event_bus import publish, EventType
+    publish(EventType.API_KEY_RAW_ADDED, "bot", {"key_id": str(result.inserted_id)})
+    audit(message.from_user.id, "add_api_key", result.inserted_id, {"name": name})
+    bot.reply_to(message, f"✅ Đã nhận API Key **{name}**. Hệ thống sẽ tự động kiểm tra và đồng bộ.")
+    
 print("Bot logic updated (V5.1) and starting...")
 bot.infinity_polling(skip_pending=True)
