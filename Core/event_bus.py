@@ -18,8 +18,16 @@ class EventType:
     JOB_DEAD           = "job_dead"
     EVENT_DEAD         = "event_dead"
     SYSTEM_ALERT       = "system_alert"
+    SCHEDULED_TRIGGER  = "scheduled_trigger"
     # Scheduled
     SCHEDULED_TRIGGER  = "scheduled_trigger"
+    # OneAPI Integration
+    API_KEY_RAW_ADDED  = "api_key_raw_added"
+    API_KEY_REFINED    = "api_key_refined"
+    API_KEY_DEAD       = "api_key_dead"
+    CHANNEL_CREATED    = "channel_created"
+    CHANNEL_UPDATED    = "channel_updated"
+    CHANNEL_DISABLED   = "channel_disabled"
 
 
 def publish(event_type, source, payload=None):
