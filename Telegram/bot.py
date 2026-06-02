@@ -1,7 +1,9 @@
-from pathlib import Path
-import sys
 import os
+import sys
+import threading
+from pathlib import Path
 from datetime import datetime
+from flask import Flask
 
 # Đồng bộ hóa đường dẫn để nhận diện thư mục Core và Telegram
 ROOT = Path(__file__).resolve().parent.parent
@@ -10,23 +12,42 @@ sys.path.insert(0, str(ROOT))
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-# Import các thành phần lõi từ V5 kiến trúc của bạn
+# Import các thành phần lõi từ V5
 from Core.mongo import db
 from Core.config import TELEGRAM_TOKEN
 from Core.job_queue import create_job, queue_stats
 from Core.event_bus import publish, EventType, pending_count
 from Core.audit import audit
 
-# Import 2 module phân quyền và chống spam bạn vừa tạo thủ công
+# Import 2 module phân quyền và chống spam
 from Telegram.auth import is_admin
 from Telegram.rate_limiter import rate_limit
 
+# ==========================================
+# 🌐 1. KHỞI TẠO MÁY CHỦ WEB GIẢ (NGỤY TRANG)
+# ==========================================
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "🤖 AI Business OS V5 - Telegram Commander đang hoạt động 24/7!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    # Chạy Flask server tắt các thông báo console để không làm rối log của Bot
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    web_app.run(host="0.0.0.0", port=port)
+
+# ==========================================
+# 🤖 2. KHỞI TẠO BOT TELEGRAM & BẢO MẬT
+# ==========================================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 def check_permission(message):
-    """Hàm kiểm tra bảo mật trước khi thực thi bất kỳ lệnh nào"""
     if not rate_limit(message.from_user.id):
-        bot.reply_to(message, "⏳ Chậm lại một chút, hệ thống chống spam đang kích hoạt...")
+        bot.reply_to(message, "⏳ Chậm lại một chút, hệ thống đang kích hoạt chống spam...")
         return False
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "⛔️ Bạn không có quyền truy cập hệ thống quản trị này.")
@@ -34,11 +55,9 @@ def check_permission(message):
     return True
 
 # ==========================================
-# 🛠 KHU VỰC CẤU HÌNH GIAO DIỆN NÚT BẤM
+# 🛠 3. CẤU HÌNH GIAO DIỆN NÚT BẤM
 # ==========================================
-
 def get_main_menu():
-    """Tạo bàn phím ghim cố định ở dưới đáy màn hình (Reply Keyboard)"""
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
         KeyboardButton("💡 Thêm Ý Tưởng"),
@@ -55,7 +74,6 @@ def get_main_menu():
     return markup
 
 def get_admin_inline_menu():
-    """Tạo nút bấm tương tác đính kèm tin nhắn (Inline Keyboard)"""
     markup = InlineKeyboardMarkup()
     markup.row(
         InlineKeyboardButton("📋 Danh sách Jobs", callback_data="admin_jobs"),
@@ -66,16 +84,17 @@ def get_admin_inline_menu():
         InlineKeyboardButton("🔌 Plugins Registry", callback_data="admin_plugins")
     )
     markup.row(
-        InlineKeyboardButton("🩺 Trạng thái Workers (Health)", callback_data="admin_health")
+        InlineKeyboardButton("🩺 Trạng thái Workers", callback_data="admin_health")
     )
     return markup
 
 # ==========================================
-# 📡 BỘ LẮNG NGHE LỆNH CHÍNH (MAIN LISTENERS)
+# 📡 4. BỘ LẮNG NGHE LỆNH CHÍNH
 # ==========================================
-
 @bot.message_handler(commands=["start"])
 def start(message):
+    # Đảm bảo luồng không bị kẹt khi gõ /start
+    bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
     if not check_permission(message): return
     bot.send_message(
         message.chat.id, 
@@ -88,6 +107,7 @@ def start(message):
     "💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"
 ])
 def handle_main_menu(message):
+    bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
     if not check_permission(message): return
     
     text = message.text
@@ -109,7 +129,6 @@ def handle_main_menu(message):
             parse_mode="Markdown"
         )
 
-# Lắng nghe và điều hướng các nút bấm Inline của khu vực Admin
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def handle_admin_callbacks(call):
     if not is_admin(call.from_user.id): return
@@ -126,89 +145,97 @@ def handle_admin_callbacks(call):
     elif action == "admin_health":
         workers_health(call.message)
         
-    # Xóa biểu tượng xoay tròn loading trên nút bấm Telegram sau khi tương tác xong
     bot.answer_callback_query(call.id)
 
 # ==========================================
-# 📥 LUỒNG NHẬP LIỆU Ý TƯỞNG VÀ SÁNG KIẾN
+# 📥 5. LUỒNG NHẬP LIỆU Ý TƯỞNG
 # ==========================================
-
-@bot.message_handler(commands=["idea"])
 def idea(message):
-    if not check_permission(message): return
-    msg = bot.reply_to(message, "📝 Nhập Yêu cầu / Ý tưởng thô mới của sếp:")
-    bot.register_next_step_handler(msg, save_request)
+    try:
+        msg = bot.reply_to(message, "📝 Nhập Yêu cầu / Ý tưởng thô mới của sếp:")
+        bot.register_next_step_handler(msg, save_request)
+    except Exception as e:
+        bot.reply_to(message, f"❌ Lỗi: {e}")
 
 def save_request(message):
-    prompt_text = message.text.strip() if message.text else ""
-    
-    # Chốt chặn nếu nhấn nút khác thay vì gõ text
-    if prompt_text in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+    try:
+        prompt_text = message.text.strip() if message.text else ""
+        
+        if prompt_text.startswith("/") or prompt_text in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+            bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+            handle_main_menu(message)
+            return
+
+        request_id = db.requests.insert_one({
+            "prompt":     prompt_text,
+            "status":     "new",
+            "created_by": message.from_user.id,
+            "created_at": datetime.utcnow()
+        }).inserted_id
+        
+        create_job("analyze_request", {"request_id": str(request_id)}, created_by=message.from_user.id)
+        publish(EventType.REQUEST_RECEIVED, "bot", {"request_id": str(request_id)})
+        audit(message.from_user.id, "create_request", request_id)
+        
+        bot.reply_to(message, f"✅ **Ghi nhận Yêu cầu thành công**\nID: `{request_id}`\n\n*Hàng đợi GitHub Actions sẽ xử lý trong mẻ tiếp theo.*", parse_mode="Markdown")
+    except Exception as e:
         bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-        handle_main_menu(message)
-        return
-
-    request_id = db.requests.insert_one({
-        "prompt":     prompt_text,
-        "status":     "new",
-        "created_by": message.from_user.id,
-        "created_at": datetime.utcnow()
-    }).inserted_id
-    
-    create_job("analyze_request", {"request_id": str(request_id)}, created_by=message.from_user.id)
-    publish(EventType.REQUEST_RECEIVED, "bot", {"request_id": str(request_id)})
-    audit(message.from_user.id, "create_request", request_id)
-    
-    bot.reply_to(message, f"✅ **Ghi nhận Yêu cầu thành công**\nID: `{request_id}`\n\n*Hàng đợi GitHub Actions sẽ xử lý trong mẻ tiếp theo.*", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ Lỗi xử lý ý tưởng: {e}")
 
 # ==========================================
-# 🔑 LUỒNG NẠP API KEY VÀ CẤU HÌNH (V5.1 SAFE)
+# 🔑 6. LUỒNG NẠP API KEY BỌC BẢO VỆ TUYỆT ĐỐI
 # ==========================================
-
 def ask_key_name(message):
-    msg = bot.reply_to(message, "🎯 **Bước 1:** Nhập TÊN GỢI NHỚ cho API Key (Ví dụ: `Gemini_Free_01`, `Groq_Chính`):", parse_mode="Markdown")
-    bot.register_next_step_handler(msg, ask_key_value)
+    try:
+        msg = bot.reply_to(message, "🎯 **Bước 1:** Nhập TÊN GỢI NHỚ cho API Key (Ví dụ: `Gemini_Free_01`, `Groq_Chính`):", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, ask_key_value)
+    except Exception as e:
+        bot.reply_to(message, f"❌ Lỗi khởi động luồng: {e}")
 
 def ask_key_value(message):
-    key_name = message.text.strip() if message.text else ""
-    
-    # BẢO VỆ CẤU TRÚC LUỒNG: Nếu bấm nút khác, thoát ngay lập tức không để đơ bot
-    if key_name.startswith("/") or key_name in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
-        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-        handle_main_menu(message)
-        return
+    try:
+        key_name = message.text.strip() if message.text else ""
+        
+        if key_name.startswith("/") or key_name in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+            bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+            handle_main_menu(message)
+            return
 
-    msg = bot.reply_to(message, f"🔑 **Bước 2:** Hãy dán chuỗi **API Key thô** của nguồn `{key_name}` vào đây:", parse_mode="Markdown")
-    bot.register_next_step_handler(msg, save_raw_key_handler, key_name)
+        msg = bot.reply_to(message, f"🔑 **Bước 2:** Hãy dán chuỗi **API Key thô** của nguồn `{key_name}` vào đây:", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, save_raw_key_handler, key_name)
+    except Exception as e:
+        bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+        bot.reply_to(message, f"❌ Lỗi xử lý bước 1: {e}")
 
 def save_raw_key_handler(message, key_name):
-    raw_key = message.text.strip() if message.text else ""
-    
-    if not raw_key or raw_key in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+    try:
+        raw_key = message.text.strip() if message.text else ""
+        
+        if not raw_key or raw_key.startswith("/") or raw_key in ["💡 Thêm Ý Tưởng", "🚀 Triển Khai (Deploy)", "📊 Thống Kê", "📑 Xem Báo Cáo", "🔑 Nạp API Key", "⚙️ Menu Quản Trị (Admin)"]:
+            bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
+            bot.reply_to(message, "❌ Đã hủy bỏ quy trình nạp Key do dữ liệu không hợp lệ.")
+            return
+
+        key_id = db.api_keys_raw.insert_one({
+            "name":       key_name,
+            "key":        raw_key,
+            "status":     "raw",
+            "created_by": message.from_user.id,
+            "created_at": datetime.utcnow()
+        }).inserted_id
+        
+        publish(EventType.REQUEST_RECEIVED, "bot", {"action": "raw_key_added", "key_id": str(key_id)})
+        audit(message.from_user.id, "add_raw_key", key_id)
+        
+        bot.reply_to(message, f"✅ **Nạp thành công API Key thô**\nTên: `{key_name}`\nID: `{key_id}`\n\n*Worker Key Refiner trên GitHub sẽ tinh chỉnh và quét model khả dụng.*", parse_mode="Markdown")
+    except Exception as e:
         bot.clear_step_handler_by_chat_id(chat_id=message.chat.id)
-        bot.reply_to(message, "❌ Đã hủy bỏ quy trình nạp Key do dữ liệu không hợp lệ.")
-        return
-
-    # Lưu trữ vào ngăn chứa thô api_keys_raw
-    key_id = db.api_keys_raw.insert_one({
-        "name":       key_name,
-        "key":        raw_key,
-        "status":     "raw",
-        "created_by": message.from_user.id,
-        "created_at": datetime.utcnow()
-    }).inserted_id
-    
-    publish(EventType.REQUEST_RECEIVED, "bot", {"action": "raw_key_added", "key_id": str(key_id)})
-    audit(message.from_user.id, "add_raw_key", key_id)
-    
-    bot.reply_to(message, f"✅ **Nạp thành công API Key thô**\nTên: `{key_name}`\nID: `{key_id}`\n\n*Worker Key Refiner trên GitHub sẽ tinh chỉnh và quét model khả dụng.*", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ Lỗi xử lý ghi dữ liệu bước 2: {e}")
 
 # ==========================================
-# 📊 CÁC HÀM TRUY VẤN VÀ THỰC THI (CORE FUNCTIONS)
+# 📊 7. CÁC HÀM TRUY VẤN VÀ THỰC THI (ADMIN)
 # ==========================================
-
 def deploy_job(message):
-    """Tạo tác vụ Deploy trực tiếp vào MongoDB giống hệt ảnh mẫu của sếp"""
     job_id = db.jobs.insert_one({
         "type": "deploy", 
         "status": "pending", 
@@ -223,14 +250,14 @@ def stats(message):
     bot.send_message(message.chat.id, f"""📊 **TRẠNG THÁI HỆ THỐNG OPERATING SYSTEM**
 
 🔹 **Hàng đợi Tác vụ (Jobs Queues):**
-  - Chờ xử lý (Pending): `{s['pending']}`
-  - Đang chạy (Processing): `{s['processing']}`
-  - Hoàn thành (Completed): `{s['completed']}`
-  - Bị lỗi kẹt (Dead): `{s['dead']}`
+  - Chờ xử lý: `{s.get('pending', 0)}`
+  - Đang chạy: `{s.get('processing', 0)}`
+  - Hoàn thành: `{s.get('completed', 0)}`
+  - Lỗi kẹt (Dead): `{s.get('dead', 0)}`
 
 🔸 **Trục Sự kiện (Event Bus):**
-  - Sự kiện chờ xử lý: `{e_pending}`
-  - Sự kiện lỗi (Dead): `{e_dead}`""", parse_mode="Markdown")
+  - Sự kiện chờ: `{e_pending}`
+  - Sự kiện lỗi: `{e_dead}`""", parse_mode="Markdown")
 
 def report(message):
     r = db.reports.find_one(sort=[("created_at", -1)])
@@ -240,11 +267,10 @@ def report(message):
     content = r.get("content", "")
     bot.send_message(message.chat.id, content[-3500:] if len(content) > 3500 else content)
 
-# Các hàm bổ trợ đọc sâu dữ liệu trong kho MongoDB hiển thị cho Admin
 def jobs_list(message):
-    rows = [f"• `{j['_id']}` | {j['type']} | `{j['status']}`" 
+    rows = [f"• `{j['_id']}` | {j.get('type','N/A')} | `{j.get('status','N/A')}`" 
             for j in db.jobs.find().sort("created_at", -1).limit(10)]
-    bot.send_message(message.chat.id, "📋 **10 Tác vụ gần nhất trong Database:**\n\n" + "\n".join(rows) if rows else "📭 Không có Jobs nào.", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "📋 **10 Tác vụ gần nhất:**\n\n" + "\n".join(rows) if rows else "📭 Không có Jobs nào.", parse_mode="Markdown")
 
 def dead_jobs(message):
     dead_list = list(db.dead_letter_queue.find().sort("failed_at", -1).limit(5))
@@ -262,100 +288,28 @@ def event_bus_status(message):
     bot.send_message(message.chat.id, "🚌 **Tình trạng lưu lượng Event Bus:**\n\n" + "\n".join(rows), parse_mode="Markdown")
 
 def plugins_list(message):
-    rows = [f"🔌 {p['event_type']} → `{p['plugin']}` [{p['status']}]" for p in db.plugin_registry.find()]
+    rows = [f"🔌 {p.get('event_type')} → `{p.get('plugin')}` [{p.get('status')}]" for p in db.plugin_registry.find()]
     bot.send_message(message.chat.id, "🔌 **Danh sách Plugins đang đăng ký lõi:**\n\n" + "\n".join(rows) if rows else "📭 Chưa đăng ký plugin nào.", parse_mode="Markdown")
 
 def workers_health(message):
-    rows = [f"👤 {w['worker']} | `状态: {w['status']}` | Chạy cuối: {w['last_seen'].strftime('%H:%M:%S') if w.get('last_seen') else 'N/A'}" for w in db.health.find()]
+    rows = [f"👤 {w.get('worker')} | `{w.get('status')}` | Chạy cuối: {w.get('last_seen').strftime('%H:%M:%S') if w.get('last_seen') else 'N/A'}" for w in db.health.find()]
     bot.send_message(message.chat.id, "🩺 **Tình trạng sức khỏe dàn Workers:**\n\n" + "\n".join(rows) if rows else "📭 Chưa bắt được tín hiệu liên lạc của Worker nào.", parse_mode="Markdown")
 
 # ==========================================
-# 🚀 KÍCH HOẠT TIẾN TRÌNH LUỒNG (RUN)
+# 🚀 8. LUỒNG KÍCH HOẠT KÉP (WEB + BOT)
 # ==========================================
-
 if __name__ == "__main__":
     print("=" * 50)
-    print("🚀 Telegram Commander V5 Menu Interactive - RUNNING")
+    print("🚀 ĐANG KHỞI ĐỘNG HỆ THỐNG KÉP (WEB + BOT)...")
     print("=" * 50)
-    # skip_pending=True giúp bot bỏ qua những tin nhắn cũ bị dồn ứ trong lúc ngắt kết nối
+    
+    # Kích hoạt máy chủ Web giả ở luồng phụ (không chặn luồng chính)
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
+    print("✅ Web Server ngụy trang đã chạy ngầm.")
+    
+    # Kích hoạt Bot Telegram ở luồng chính
+    print("✅ Telegram Polling đang kết nối...")
+    # skip_pending=True xóa sạch các lệnh lỗi cũ khi bot vừa khởi động lại
     bot.infinity_polling(skip_pending=True)
         
-        payload = json.loads(parts[2])
-        db.scheduled_tasks.insert_one({
-            "type": parts[1],
-            "payload": payload,
-            "status": "pending",
-            "created_by": message.from_user.id,
-            "created_at": datetime.utcnow()
-        })
-        bot.reply_to(message, "✅ Đã lập lịch tác vụ an toàn.")
-        audit(message.from_user.id, "schedule_task", parts[1], {"payload": payload})
-    except json.JSONDecodeError:
-        bot.reply_to(message, "❌ L���i JSON: Vui lòng kiểm tra format payload")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Lỗi: {str(e)}")
-
-# ==========================================
-# /apikey - Add API Key Flow
-# ==========================================
-
-@bot.message_handler(commands=["apikey"])
-def apikey(message):
-    """Start API key addition flow"""
-    if not check_auth(message):
-        return
-    msg = bot.reply_to(message, "🔑 Nhập tên gợi nhớ cho API Key (VD: Gemini_Free_01):")
-    bot.register_next_step_handler(msg, get_key_name)
-
-def get_key_name(message):
-    """Get API key name from user"""
-    name = message.text.strip()
-    if not name or len(name) < 2:
-        bot.reply_to(message, "❌ Tên không hợp lệ (tối thiểu 2 ký tự). Hãy dùng /apikey để thử lại.")
-        return
-    msg = bot.reply_to(message, f"📎 Dán API Key cho **{name}**:")
-    bot.register_next_step_handler(msg, lambda m: save_api_key(m, name))
-
-def save_api_key(message, name):
-    """Save API key to database"""
-    api_key = message.text.strip()
-    if len(api_key) < 10:
-        bot.reply_to(message, "❌ API Key quá ngắn (tối thiểu 10 ký tự), không hợp lệ.")
-        return
-    
-    try:
-        doc = {
-            "name": name,
-            "key": api_key,
-            "status": "raw",
-            "source": "telegram",
-            "created_by": message.from_user.id,
-            "created_at": datetime.utcnow()
-        }
-        result = db.api_keys_raw.insert_one(doc)
-        
-        # Publish event for worker to process
-        from Core.event_bus import publish, EventType
-        publish(EventType.API_KEY_RAW_ADDED, "bot", {"key_id": str(result.inserted_id)})
-        
-        # Log audit trail
-        audit(message.from_user.id, "add_api_key", result.inserted_id, {"name": name})
-        
-        bot.reply_to(message, f"✅ Đã nhận API Key **{name}**. Hệ thống sẽ tự động kiểm tra và đồng bộ.")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Lỗi khi lưu API Key: {str(e)}")
-        print(f"Error saving API key: {e}")
-
-# ==========================================
-# Main Loop
-# ==========================================
-
-if __name__ == "__main__":
-    print("🤖 Bot is starting...")
-    print(f"✓ Telegram Token: {'Loaded' if TELEGRAM_TOKEN else 'MISSING'}")
-    try:
-        print("🚀 Bot is polling for messages...")
-        bot.infinity_polling(skip_pending=True)
-    except Exception as e:
-        print(f"❌ Bot error: {e}")
-        raise
