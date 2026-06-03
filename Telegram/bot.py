@@ -461,7 +461,6 @@ if __name__ == "__main__":
     print("=" * 50)
     # skip_pending=True giúp bot bỏ qua những tin nhắn cũ bị dồn ứ trong lúc ngắt kết nối
     bot.infinity_polling(skip_pending=True)
-        
     payload = json.loads(parts[2])
     db.scheduled_tasks.insert_one({
             "type": parts[1],
