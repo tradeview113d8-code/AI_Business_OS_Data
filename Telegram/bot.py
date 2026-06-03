@@ -472,10 +472,10 @@ if __name__ == "__main__":
         })
     bot.reply_to(message, "✅ Đã lập lịch tác vụ an toàn.")
     audit(message.from_user.id, "schedule_task", parts[1], {"payload": payload})
-    except json.JSONDecodeError:
-        bot.reply_to(message, "❌ L���i JSON: Vui lòng kiểm tra format payload")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Lỗi: {str(e)}")
+except json.JSONDecodeError:
+    bot.reply_to(message, "❌ L���i JSON: Vui lòng kiểm tra format payload")
+except Exception as e:
+    bot.reply_to(message, f"❌ Lỗi: {str(e)}")
 
 # ==========================================
 # /apikey - Add API Key Flow
@@ -493,8 +493,8 @@ def get_key_name(message):
     """Get API key name from user"""
     name = message.text.strip()
     if not name or len(name) < 2:
-        bot.reply_to(message, "❌ Tên không hợp lệ (tối thiểu 2 ký tự). Hãy dùng /apikey để thử lại.")
-        return
+    bot.reply_to(message, "❌ Tên không hợp lệ (tối thiểu 2 ký tự). Hãy dùng /apikey để thử lại.")
+    return
     msg = bot.reply_to(message, f"📎 Dán API Key cho **{name}**:")
     bot.register_next_step_handler(msg, lambda m: save_api_key(m, name))
 
@@ -502,8 +502,8 @@ def save_api_key(message, name):
     """Save API key to database"""
     api_key = message.text.strip()
     if len(api_key) < 10:
-        bot.reply_to(message, "❌ API Key quá ngắn (tối thiểu 10 ký tự), không hợp lệ.")
-        return
+    bot.reply_to(message, "❌ API Key quá ngắn (tối thiểu 10 ký tự), không hợp lệ.")
+    return
     
     try:
         doc = {
