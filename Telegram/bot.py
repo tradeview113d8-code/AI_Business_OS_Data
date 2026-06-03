@@ -470,7 +470,7 @@ if __name__ == "__main__":
             "created_by": message.from_user.id,
             "created_at": datetime.utcnow()
         })
-        bot.reply_to(message, "✅ Đã lập lịch tác vụ an toàn.")
+    bot.reply_to(message, "✅ Đã lập lịch tác vụ an toàn.")
         audit(message.from_user.id, "schedule_task", parts[1], {"payload": payload})
     except json.JSONDecodeError:
         bot.reply_to(message, "❌ L���i JSON: Vui lòng kiểm tra format payload")
