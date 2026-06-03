@@ -285,10 +285,10 @@ if __name__ == "__main__":
     print("🚀 Khởi động Bot Telegram...")
     bot.infinity_polling(skip_pending=True)
     bot.send_message(
-            message.chat.id, 
-            "🛠 **Khu vực giám sát & Điều phối kỹ thuật:**", 
-            reply_markup=get_admin_inline_menu(),
-            parse_mode="Markdown"
+        message.chat.id,
+        "🛠 **Khu vực giám sát & Điều phối kỹ thuật:**",
+        reply_markup=get_admin_inline_menu(),
+        parse_mode="Markdown"
         )
 
 # Lắng nghe và điều hướng các nút bấm Inline của khu vực Admin
