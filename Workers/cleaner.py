@@ -5,32 +5,55 @@ sys.path.insert(0, str(ROOT))
 
 from datetime import datetime, timedelta
 from Core.mongo import db
+from Core.health import heartbeat
 from Core.logger import log_event
 
 WORKER = "cleaner"
 
 def run():
-    cutoff_7d  = datetime.utcnow() - timedelta(days=7)
-    cutoff_30d = datetime.utcnow() - timedelta(days=30)
+    # Điểm danh sự sống
+    heartbeat(WORKER)
+    
+    # Mốc thời gian: Bất cứ thứ gì kẹt quá 15 phút đều bị coi là có vấn đề
+    stuck_time = datetime.utcnow() - timedelta(minutes=15)
+    
+    # Quét băng chuyền Sự kiện (Events)
+    stuck_events = db.events.find({
+        "status": {"$in": ["pending", "processing"]},
+        "updated_at": {"$lt": stuck_time}
+    })
+    
+    rescued_count = 0
+    dead_count = 0
 
-    r1 = db.jobs.delete_many({
-        "status": "completed", "finished_at": {"$lt": cutoff_7d}
-    })
-    r2 = db.logs.delete_many({"created_at": {"$lt": cutoff_7d}})
-    r3 = db.notifications.delete_many({
-        "sent": True, "created_at": {"$lt": cutoff_7d}
-    })
-    r4 = db.system_health.delete_many({"checked_at": {"$lt": cutoff_7d}})
-    r5 = db.events.delete_many({
-        "status": "completed", "created_at": {"$lt": cutoff_30d}
-    })
-    r6 = db.metrics.delete_many({"timestamp": {"$lt": cutoff_30d}})
+    for event in stuck_events:
+        retries = event.get("retries", 0)
+        
+        if retries < 3:
+            # Cấp cứu: Trả lại trạng thái pending để làm lại
+            db.events.update_one(
+                {"_id": event["_id"]},
+                {
+                    "$set": {"status": "pending", "updated_at": datetime.utcnow()},
+                    "$inc": {"retries": 1}
+                }
+            )
+            log_event(WORKER, "WARNING", f"🔄 Đã hô hấp nhân tạo sự kiện {event.get('type')} (Lần {retries + 1})")
+            rescued_count += 1
+        else:
+            # Vô phương cứu chữa: Đẩy vào góc (Dead status)
+            db.events.update_one(
+                {"_id": event["_id"]},
+                {"$set": {"status": "dead", "updated_at": datetime.utcnow()}}
+            )
+            log_event(WORKER, "ERROR", f"💀 Sự kiện {event.get('type')} đã chết hẳn sau 3 lần cấp cứu.")
+            dead_count += 1
 
-    log_event(WORKER, "INFO",
-        f"cleaned jobs={r1.deleted_count} logs={r2.deleted_count} "
-        f"notifs={r3.deleted_count} health={r4.deleted_count} "
-        f"events={r5.deleted_count} metrics={r6.deleted_count}"
-    )
+    if rescued_count > 0 or dead_count > 0:
+        print(f"[{datetime.utcnow()}] Y tá dọn dẹp: Hồi sinh {rescued_count} ca, Chuyển nhà xác {dead_count} ca.")
+    else:
+        print(f"[{datetime.utcnow()}] Băng chuyền sạch sẽ, không có ca kẹt.")
 
 if __name__ == "__main__":
     run()
+    
