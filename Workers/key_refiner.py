@@ -10,7 +10,6 @@ from Core.health import heartbeat
 
 WORKER = "key_refiner"
 
-# Nhận diện provider từ prefix key
 KEY_PATTERNS = {
     "openai":     "sk-",
     "openrouter": "sk-or-",
@@ -21,7 +20,7 @@ KEY_PATTERNS = {
 }
 
 
-def detect_provider(key_name: str, raw_key: str) -> str:
+def detect_provider(key_name, raw_key):
     name_lower = key_name.lower()
     for provider in KEY_PATTERNS:
         if provider in name_lower:
@@ -32,14 +31,14 @@ def detect_provider(key_name: str, raw_key: str) -> str:
     return "unknown"
 
 
-def validate_key(raw_key: str) -> bool:
+def validate_key(raw_key):
     return len(raw_key.strip()) >= 20
 
 
 def run():
     heartbeat(WORKER)
     processed = 0
-    failed    = 0
+    failed = 0
 
     raw_keys = list(db.api_keys_raw.find({"status": "raw"}))
 
@@ -50,7 +49,7 @@ def run():
     for raw in raw_keys:
         try:
             key_name = raw.get("name", "")
-            raw_key  = raw.get("key", "").strip()
+            raw_key = raw.get("key", "").strip()
 
             if not validate_key(raw_key):
                 db.api_keys_raw.update_one(
@@ -62,7 +61,6 @@ def run():
 
             provider = detect_provider(key_name, raw_key)
 
-            # Lưu vào api_keys (chuẩn)
             db.api_keys.update_one(
                 {"name": key_name},
                 {"$set": {
@@ -78,7 +76,6 @@ def run():
                 upsert=True
             )
 
-            # Lưu vào api_key_vault (để Model Router dùng)
             db.api_key_vault.update_one(
                 {"provider": provider, "key": raw_key},
                 {"$set": {
@@ -94,15 +91,14 @@ def run():
                 upsert=True
             )
 
-            # Đánh dấu raw đã xử lý
             db.api_keys_raw.update_one(
                 {"_id": raw["_id"]},
                 {"$set": {"status": "refined", "provider": provider}}
             )
 
             processed += 1
-            log_event(WORKER, "INFO", f"refined: {key_name} → {provider}")
-            print(f"[OK] {key_name} → {provider}")
+            log_event(WORKER, "INFO", f"refined: {key_name} provider={provider}")
+            print(f"[OK] {key_name} -> {provider}")
 
         except Exception as e:
             failed += 1
@@ -112,56 +108,6 @@ def run():
     print(f"key_refiner done: processed={processed} failed={failed}")
     log_event(WORKER, "INFO", f"done processed={processed} failed={failed}")
 
-
-if __name__ == "__main__":
-    run()
-            {"$set": {"status": "failed", "last_error": "health_check_failed"}}
-        )
-        publish(EventType.API_KEY_DEAD, WORKER, {
-            "raw_key_id": str(raw_id),
-            "name": name,
-            "provider": provider
-        })
-        mark_processed(WORKER, str(raw_id))
-        return
-
-    # Khám phá models
-    models = discover_models(provider, api_key)
-
-    # Lưu vào api_keys_refined (KHÔNG lưu key)
-    refined_doc = {
-        "raw_key_id": str(raw_id),
-        "name": name,
-        "provider": provider,
-        "status": "active",
-        "supported_models": models,
-        "refined_at": datetime.utcnow(),
-        "health_score": health_score
-    }
-    db.api_keys_refined.update_one(
-        {"raw_key_id": str(raw_id)},
-        {"$set": refined_doc},
-        upsert=True
-    )
-
-    db.api_keys_raw.update_one(
-        {"_id": raw_id},
-        {"$set": {"status": "processed"}}
-    )
-
-    publish(EventType.API_KEY_REFINED, WORKER, {
-        "raw_key_id": str(raw_id),
-        "provider": provider,
-        "models": models
-    })
-
-    mark_processed(WORKER, str(raw_id))
-    log_event(WORKER, "INFO", f"Refined key {name} -> {provider}")
-
-def run():
-    raw_keys = db.api_keys_raw.find({"status": "raw"})
-    for key in raw_keys:
-        refine_key(key)
 
 if __name__ == "__main__":
     run()
