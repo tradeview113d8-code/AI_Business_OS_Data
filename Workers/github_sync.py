@@ -1,99 +1,93 @@
-import time
-import sys
-import os
 from pathlib import Path
-from github import Github, Auth # Import Auth
-from dotenv import load_dotenv
-
+import sys
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-load_dotenv(override=True)
 
-from Core.job_queue import claim_job, complete_job, fail_job
-from Core.logger import log_event # Added for consistency, ensure it's in original V5.1
+import json
+import signal
+from datetime import datetime
+from Core.mongo import db
+from Core.config import GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, MOCK_MODE
+from Core.logger import log_event
+from Core.circuit import CircuitBreaker
 
-def get_github_repo():
-    token = os.getenv('GITHUB_TOKEN')
-    repo_name = os.getenv('GITHUB_REPO', 'AI_Business_OS_Data')
-    owner_name = os.getenv('GITHUB_OWNER', os.getenv('GITHUB_USERNAME')) # Added owner_name
+WORKER   = "github_sync"
+cb       = CircuitBreaker(failure_threshold=3, recovery_timeout=120)
+MAX_DOCS = 20  # Giới hạn số doc/collection — tránh timeout
 
-    if not token:
-        raise ValueError("GITHUB_TOKEN environment variable not set.")
 
-    # Use Auth.Token for authentication
-    g = Github(auth=Auth.Token(token))
-    user = g.get_user()
+def timeout_handler(signum, frame):
+    raise TimeoutError("github_sync exceeded time limit")
 
-    if not owner_name:
-        owner_name = user.login # Fallback to authenticated user's login
-        os.environ['GITHUB_OWNER'] = owner_name # Set it for future uses
+
+def to_markdown(collection, doc):
+    doc_id  = str(doc.get("_id", ""))
+    updated = str(doc.get("updated_at", doc.get("created_at", "")))
+    body    = {k: str(v) for k, v in doc.items() if k != "_id"}
+    return (
+        f"# {collection} / {doc_id}\n\n"
+        f"Updated: {updated}\n\n"
+        f"```json\n{json.dumps(body, indent=2, ensure_ascii=False)}\n```\n"
+    )
+
+
+def sync_file(repo, path, content):
+    def do():
+        try:
+            existing = repo.get_contents(path)
+            repo.update_file(path, "sync", content, existing.sha)
+        except Exception:
+            repo.create_file(path, "sync", content)
+    cb.call(do)
+
+
+def run():
+    # Hard timeout 80 giây (Linux only)
+    try:
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(80)
+    except (AttributeError, OSError):
+        pass
+
+    collections = ["personal_knowledge", "config"]
+    synced = 0
+
+    if MOCK_MODE:
+        for col in collections:
+            print(f"[MOCK] Would sync {db[col].count_documents({})} docs from {col}")
+        return
 
     try:
-        repo = g.get_user(owner_name).get_repo(repo_name)
+        from github import Github
+        repo = Github(GITHUB_TOKEN).get_repo(f"{GITHUB_OWNER}/{GITHUB_REPO}")
     except Exception as e:
-        # If repo doesn't exist under the specified owner, try to create it if it's the authenticated user
-        if owner_name == user.login:
-            print(f"Repository {repo_name} not found, attempting to create...")
-            repo = user.create_repo(repo_name, private=True)
-        else:
-            raise e
-    return repo
+        log_event(WORKER, "ERROR", f"GitHub connect failed: {e}")
+        print(f"GitHub connect failed: {e}")
+        return
 
-def sync_project_files(repo):
-    base_path = Path(os.getenv('PROJECT_ROOT', ROOT))
-
-    folders = ['Core', 'Telegram', 'Workers', 'Plugins', '.github']
-    root_files = ['bootstrap.py', 'mongo_indexes.py', 'seed_admin.py', 'requirements.txt', 'plugin_runner.py', 'scheduler_runner.py', 'build_zip.py', '.env.example']
-
-    all_paths = []
-    for folder in folders:
-        f_path = base_path / folder
-        if f_path.exists():
-            all_paths.extend(list(f_path.rglob('*')))
-
-    for rf in root_files:
-        rf_path = base_path / rf
-        if rf_path.exists():
-            all_paths.append(rf_path)
-
-    for file_path in all_paths:
-        if file_path.is_dir() or '.git' in str(file_path): continue
-
-        rel_path = str(file_path.relative_to(base_path))
-        try:
-            with open(file_path, 'rb') as f_content:
-                content = f_content.read()
-
+    for col in collections:
+        docs = list(db[col].find().sort("created_at", -1).limit(MAX_DOCS))
+        for doc in docs:
             try:
-                existing = repo.get_contents(rel_path)
-                if existing.decoded_content != content:
-                    repo.update_file(rel_path, f"update {rel_path}", content, existing.sha)
-                    print(f"Updated: {rel_path}")
-            except Exception as e: # Catch all exceptions, not just 'Not Found'
-                if "not found" in str(e).lower(): # Only create if file genuinely doesn't exist
-                    repo.create_file(rel_path, f"initial {rel_path}", content)
-                    print(f"Created: {rel_path}")
-                else:
-                    print(f"Error processing {rel_path}: {e}")
-
-        except Exception as e:
-            print(f"Skipping {rel_path} due to read/write error: {e}")
-
-def run_worker():
-    print("GitHub Comprehensive-Sync Worker active...")
-    while True:
-        job = claim_job("github_sync", "full_sync_worker")
-        if job:
-            try:
-                repo = get_github_repo()
-                sync_project_files(repo)
-                complete_job(job['_id'])
-                print(f"✅ All files synced to GitHub successfully.")
+                path    = f"sync_logs/{col}/{doc['_id']}.md"
+                content = to_markdown(col, doc)
+                sync_file(repo, path, content)
+                synced += 1
             except Exception as e:
-                print(f"❌ Error in worker execution: {e}")
-                log_event("github_sync", "ERROR", f"Worker failed for job {job['_id']}: {str(e)}") # Log error
-                fail_job(job['_id'], str(e))
-        time.sleep(10)
+                log_event(WORKER, "ERROR", f"sync failed {doc['_id']}: {e}")
+                if cb.state == "open":
+                    log_event(WORKER, "WARN", "Circuit open — aborting sync")
+                    print("Circuit open — aborting github_sync")
+                    break
 
-if __name__ == '__main__':
-    run_worker()
+    try:
+        signal.alarm(0)
+    except (AttributeError, OSError):
+        pass
+
+    log_event(WORKER, "INFO", f"synced {synced} docs")
+    print(f"GitHub sync complete: {synced} docs")
+
+
+if __name__ == "__main__":
+    run()
