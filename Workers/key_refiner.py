@@ -1,107 +1,120 @@
-# Workers/key_refiner.py
-# ==================================================
-# Phát hiện provider, tự kiểm tra, khám phá models
-# ==================================================
 from pathlib import Path
 import sys
-import requests
-import re
-from datetime import datetime
-from bson import ObjectId
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from datetime import datetime
 from Core.mongo import db
-from Core.event_bus import publish, EventType
 from Core.logger import log_event
-from Core.idempotency import already_processed, mark_processed
+from Core.health import heartbeat
 
 WORKER = "key_refiner"
 
-# Mapping provider dựa trên prefix hoặc pattern
-PROVIDER_PATTERNS = [
-    (re.compile(r"^AIza[0-9A-Za-z\-_]+$"), "google", "gemini"),
-    (re.compile(r"^gsk_[A-Za-z0-9]+$"), "groq", "groq"),
-    (re.compile(r"^sk-[A-Za-z0-9]+$"), "openai", "openai"),
-    (re.compile(r"^sk-or-v1-[A-Za-z0-9]+$"), "openrouter", "openrouter"),
-    (re.compile(r"^[A-Za-z0-9]{32,}$"), "generic", "unknown")
-]
-
-# Model discovery endpoints (nếu có)
-MODEL_ENDPOINTS = {
-    "openai": "https://api.openai.com/v1/models",
-    "groq": "https://api.groq.com/openai/v1/models",
-    "openrouter": "https://openrouter.ai/api/v1/models"
+# Nhận diện provider từ prefix key
+KEY_PATTERNS = {
+    "openai":     "sk-",
+    "openrouter": "sk-or-",
+    "anthropic":  "sk-ant-",
+    "gemini":     "AIza",
+    "groq":       "gsk_",
+    "cohere":     "co-",
 }
 
-# Fallback models
-FALLBACK_MODELS = {
-    "google": ["gemini-2.5-flash", "gemini-2.5-pro"],
-    "groq": ["llama3-70b-8192", "mixtral-8x7b-32768"],
-    "openai": ["gpt-4o", "gpt-4-turbo"],
-    "openrouter": ["openai/gpt-4o", "anthropic/claude-3-opus"]
-}
 
-def detect_provider(api_key):
-    for pattern, provider, default_model in PROVIDER_PATTERNS:
-        if pattern.match(api_key.strip()):
-            return provider, default_model
-    return "unknown", "unknown"
+def detect_provider(key_name: str, raw_key: str) -> str:
+    name_lower = key_name.lower()
+    for provider in KEY_PATTERNS:
+        if provider in name_lower:
+            return provider
+    for provider, prefix in KEY_PATTERNS.items():
+        if raw_key.startswith(prefix):
+            return provider
+    return "unknown"
 
-def check_key_health(provider, api_key):
-    """Gửi yêu cầu kiểm tra đơn giản đến endpoint /models hoặc /chat/completions"""
-    try:
-        if provider == "google":
-            # Gemini: gọi list models (không tốn credit)
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-            resp = requests.get(url, timeout=10)
-            return resp.status_code == 200
-        elif provider in MODEL_ENDPOINTS:
-            headers = {"Authorization": f"Bearer {api_key}"}
-            resp = requests.get(MODEL_ENDPOINTS[provider], headers=headers, timeout=10)
-            return resp.status_code == 200
-        else:
-            # Generic: chỉ kiểm tra cú pháp
-            return len(api_key) > 10
-    except:
-        return False
 
-def discover_models(provider, api_key):
-    """Lấy danh sách model hỗ trợ, fallback nếu lỗi"""
-    if provider in MODEL_ENDPOINTS:
-        try:
-            headers = {"Authorization": f"Bearer {api_key}"}
-            resp = requests.get(MODEL_ENDPOINTS[provider], headers=headers, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if provider == "openai" and "data" in data:
-                    return [m["id"] for m in data["data"] if "gpt" in m["id"]]
-                elif provider == "groq" and "data" in data:
-                    return [m["id"] for m in data["data"]]
-                elif provider == "openrouter":
-                    return [m["id"] for m in data.get("data", [])]
-        except:
-            pass
-    return FALLBACK_MODELS.get(provider, ["unknown-model"])
+def validate_key(raw_key: str) -> bool:
+    return len(raw_key.strip()) >= 20
 
-def refine_key(raw_key):
-    """Xử lý một api_keys_raw document"""
-    raw_id = raw_key["_id"]
-    if already_processed(WORKER, str(raw_id)):
+
+def run():
+    heartbeat(WORKER)
+    processed = 0
+    failed    = 0
+
+    raw_keys = list(db.api_keys_raw.find({"status": "raw"}))
+
+    if not raw_keys:
+        print("key_refiner: no raw keys to process")
         return
 
-    api_key = raw_key.get("key", "")
-    name = raw_key.get("name", "unnamed")
-    provider, default_model = detect_provider(api_key)
+    for raw in raw_keys:
+        try:
+            key_name = raw.get("name", "")
+            raw_key  = raw.get("key", "").strip()
 
-    # Kiểm tra health
-    is_alive = check_key_health(provider, api_key)
-    health_score = 100 if is_alive else 0
+            if not validate_key(raw_key):
+                db.api_keys_raw.update_one(
+                    {"_id": raw["_id"]},
+                    {"$set": {"status": "invalid", "reason": "too_short"}}
+                )
+                failed += 1
+                continue
 
-    if not is_alive:
-        db.api_keys_raw.update_one(
-            {"_id": raw_id},
+            provider = detect_provider(key_name, raw_key)
+
+            # Lưu vào api_keys (chuẩn)
+            db.api_keys.update_one(
+                {"name": key_name},
+                {"$set": {
+                    "name":        key_name,
+                    "key":         raw_key,
+                    "provider":    provider,
+                    "status":      "active",
+                    "usage_count": 0,
+                    "created_by":  raw.get("created_by"),
+                    "created_at":  raw.get("created_at", datetime.utcnow()),
+                    "updated_at":  datetime.utcnow()
+                }},
+                upsert=True
+            )
+
+            # Lưu vào api_key_vault (để Model Router dùng)
+            db.api_key_vault.update_one(
+                {"provider": provider, "key": raw_key},
+                {"$set": {
+                    "provider":    provider,
+                    "key":         raw_key,
+                    "name":        key_name,
+                    "status":      "active",
+                    "usage_count": 0,
+                    "error_count": 0,
+                    "last_used":   None,
+                    "added_at":    datetime.utcnow()
+                }},
+                upsert=True
+            )
+
+            # Đánh dấu raw đã xử lý
+            db.api_keys_raw.update_one(
+                {"_id": raw["_id"]},
+                {"$set": {"status": "refined", "provider": provider}}
+            )
+
+            processed += 1
+            log_event(WORKER, "INFO", f"refined: {key_name} → {provider}")
+            print(f"[OK] {key_name} → {provider}")
+
+        except Exception as e:
+            failed += 1
+            log_event(WORKER, "ERROR", f"failed {raw.get('name')}: {e}")
+            print(f"[ERR] {raw.get('name')}: {e}")
+
+    print(f"key_refiner done: processed={processed} failed={failed}")
+    log_event(WORKER, "INFO", f"done processed={processed} failed={failed}")
+
+
+if __name__ == "__main__":
+    run()
             {"$set": {"status": "failed", "last_error": "health_check_failed"}}
         )
         publish(EventType.API_KEY_DEAD, WORKER, {
