@@ -296,7 +296,7 @@ if __name__ == "__main__":
         bot.reply_to(message, f"❌ Lỗi: {str(e)}")
 
 # ==========================================
-# /apikey - Add API Key Flows
+# /apikey - Add API Key Flow
 # ==========================================
 
 @bot.message_handler(commands=["apikey"])
