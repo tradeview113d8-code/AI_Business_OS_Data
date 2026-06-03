@@ -270,7 +270,7 @@ def workers_health(message):
     bot.send_message(message.chat.id, "🩺 **Tình trạng sức khỏe dàn Workers:**\n\n" + "\n".join(rows) if rows else "📭 Chưa bắt được tín hiệu liên lạc của Worker nào.", parse_mode="Markdown")
 
 # ==========================================
-# 🚀 KÍCH HOẠT TIẾN TRÌNH LUỒNG (RUN)n
+# 🚀 KÍCH HOẠT TIẾN TRÌNH LUỒNG (RUN)
 # ==========================================
 
 if __name__ == "__main__":
