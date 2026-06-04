@@ -30,4 +30,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GIST_UPDATE_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python Work/export_memory.py
+        run: python Workers/export_memory.py
