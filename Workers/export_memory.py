@@ -2,9 +2,8 @@ import os
 import requests
 from pathlib import Path
 
-# --- CẤU HÌNH ---
-# Giám đốc điền ID của Gist (chuỗi ký tự trong URL của Gist) và Tên file vào đây
-GIST_ID = "https://gist.githubusercontent.com/tradeview113d8-code/c17fd2e68c12d1742522b86808bbe45d/raw/199020d099d750c9e702077303fa8c0656f8557c" 
+# --- CẤU HÌNH GIST CHUẨN ---
+GIST_ID = "c17fd2e68c12d1742522b86808bbe45d"
 FILENAME = "repo_memory.txt"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
@@ -61,13 +60,11 @@ def update_gist(content):
     
     if response.status_code == 200:
         print("✅ Thành công! Gist đã được cập nhật bản mới nhất.")
-        # In ra đường link Raw bất tử để Giám đốc copy cho LLM
         username = response.json().get('owner', {}).get('login', 'user')
-        print(f"👉 Link cho LLM: https://gist.githubusercontent.com/{username}/{GIST_ID}/raw/{FILENAME}")
+        print(f"👉 Link bất tử cho LLM: https://gist.githubusercontent.com/{username}/{GIST_ID}/raw/{FILENAME}")
     else:
         print(f"❌ Thất bại: {response.status_code} - {response.text}")
 
 if __name__ == "__main__":
     memory_content = generate_memory()
     update_gist(memory_content)
-
