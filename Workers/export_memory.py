@@ -4,7 +4,7 @@ from pathlib import Path
 
 # --- CẤU HÌNH ---
 # Giám đốc điền ID của Gist (chuỗi ký tự trong URL của Gist) và Tên file vào đây
-GIST_ID = "ĐIỀN_GIST_ID_CỦA_BẠN_VÀO_ĐÂY" 
+GIST_ID = "https://gist.githubusercontent.com/tradeview113d8-code/c17fd2e68c12d1742522b86808bbe45d/raw/199020d099d750c9e702077303fa8c0656f8557c" 
 FILENAME = "repo_memory.txt"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
