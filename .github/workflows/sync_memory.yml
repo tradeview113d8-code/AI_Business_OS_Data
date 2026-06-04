@@ -1,0 +1,30 @@
+name: 🧠 Sync Repo Memory to Gist
+
+on:
+  push:
+    branches: [ "main" ] # Chỉ chạy khi có code mới đẩy lên nhánh main
+  workflow_dispatch:     # Cho phép Giám đốc bấm nút chạy bằng tay
+
+jobs:
+  sync_gist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kéo mã nguồn về
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cài thư viện requests
+        run: pip install requests
+
+      - name: Cập nhật sổ tay lên Gist
+        env:
+          # LƯU Ý: GITHUB_TOKEN mặc định không có quyền sửa Gist.
+          # Giám đốc cần tạo một Personal Access Token (PAT) có tick chọn quyền "gist"
+          # Rồi lưu vào Settings -> Secrets với tên GIST_UPDATE_TOKEN
+          GITHUB_TOKEN: ${{ secrets.GIST_UPDATE_TOKEN }} 
+        run: python Workers/export_memory.py
+
