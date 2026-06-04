@@ -1,33 +1,102 @@
-# FILE: .github/workflows/sync_memory.yml
 name: 🧠 Sync Repo Memory to Gist
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+
+    paths:
+      - "**/*.py"
+      - "**/*.yml"
+      - "**/*.yaml"
+      - "**/*.json"
+      - "**/*.md"
+
+    paths-ignore:
+      - "repo_memory.txt"
+
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-memory-sync
+  cancel-in-progress: true
 
 jobs:
   sync_gist:
+    name: Generate & Upload Repo Memory
     runs-on: ubuntu-latest
+
+    timeout-minutes: 15
+
     steps:
-      - name: Kéo mã nguồn về
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Lấy toàn bộ lịch sử để phân tích recent changes
+          fetch-depth: 0
 
-      - name: Cài đặt Python
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Cài thư viện
+      - name: ⬆️ Upgrade Pip
+        run: python -m pip install --upgrade pip
+
+      - name: 📦 Install Dependencies
         run: |
           pip install requests pyyaml
-          # Nếu repo có requirements.txt, cài để phân tích dependency
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Tạo và đẩy Repo Memory lên Gist
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt || true
+          fi
+
+      - name: 🧠 Generate Repo Memory
+        env:
+          REPO_MEMORY_ONLY: "1"
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          python scripts/export_memory.py
+
+      - name: ✅ Validate Output
+        run: |
+          if [ ! -f repo_memory.txt ]; then
+            echo "repo_memory.txt not found"
+            exit 1
+          fi
+
+          FILE_SIZE=$(wc -c < repo_memory.txt)
+
+          if [ "$FILE_SIZE" -lt 500 ]; then
+            echo "repo_memory.txt too small"
+            exit 1
+          fi
+
+          echo "Generated size: ${FILE_SIZE} bytes"
+
+      - name: 📦 Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-memory
+          path: repo_memory.txt
+          retention-days: 7
+
+      - name: 🚀 Upload To Gist
         env:
           GITHUB_TOKEN: ${{ secrets.GIST_UPDATE_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python Workers/export_memory.py
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_FILENAME: repo_memory.txt
+          REPO_MEMORY_UPLOAD_ONLY: "1"
+        run: |
+          python scripts/export_memory.py
+
+      - name: 📊 Summary
+        run: |
+          echo "Repo Memory sync completed"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"
