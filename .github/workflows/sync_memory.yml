@@ -1,9 +1,10 @@
+# FILE: .github/workflows/sync_memory.yml
 name: 🧠 Sync Repo Memory to Gist
 
 on:
   push:
-    branches: [ "main" ] # Chỉ chạy khi có code mới đẩy lên nhánh main
-  workflow_dispatch:     # Cho phép Giám đốc bấm nút chạy bằng tay
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   sync_gist:
@@ -11,20 +12,22 @@ jobs:
     steps:
       - name: Kéo mã nguồn về
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Lấy toàn bộ lịch sử để phân tích recent changes
 
       - name: Cài đặt Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Cài thư viện requests
-        run: pip install requests
+      - name: Cài thư viện
+        run: |
+          pip install requests pyyaml
+          # Nếu repo có requirements.txt, cài để phân tích dependency
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Cập nhật sổ tay lên Gist
+      - name: Tạo và đẩy Repo Memory lên Gist
         env:
-          # LƯU Ý: GITHUB_TOKEN mặc định không có quyền sửa Gist.
-          # Giám đốc cần tạo một Personal Access Token (PAT) có tick chọn quyền "gist"
-          # Rồi lưu vào Settings -> Secrets với tên GIST_UPDATE_TOKEN
-          GITHUB_TOKEN: ${{ secrets.GIST_UPDATE_TOKEN }} 
-        run: python Workers/export_memory.py
-
+          GITHUB_TOKEN: ${{ secrets.GIST_UPDATE_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python Work/export_memory.py
