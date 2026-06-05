@@ -36,4 +36,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GIST_UPDATE_TOKEN }} 
         
         # Sửa lại đường dẫn này nếu file export_memory.py nằm ở thư mục khác
-        run: python Worker/export_memory.py 
+        run: python Workers/export_memory.py 
