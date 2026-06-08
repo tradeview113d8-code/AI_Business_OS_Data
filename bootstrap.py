@@ -1,58 +1,45 @@
 import os
+import time
 from pymongo import MongoClient, IndexModel, ASCENDING, DESCENDING
 from dotenv import load_dotenv
 
-# Load env variables safely
 load_dotenv()
-mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/?replicaSet=rs0')
+mongo_uri = os.getenv('MONGODB_URI', 'mongodb://127.0.0.1:27017/?replicaSet=rs0')
 
-print("🔄 Đang kết nối tới MongoDB...")
-client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+print("🔄 Codespaces đang kích hoạt kiểm tra hạ tầng dữ liệu...")
+# Chờ đợi MongoDB khởi động hoàn toàn trong container
+time.sleep(3)
+
+client = MongoClient(mongo_uri, serverSelectionTimeoutMS=10000)
 db = client.business_os_v6
 
-def init_db():
+def init_codespace_db():
     try:
+        # Kích hoạt khẩn cấp Replica Set trực tiếp từ bên trong môi trường
+        admin_client = MongoClient('mongodb://127.0.0.1:27017/', serverSelectionTimeoutMS=5000)
+        try:
+            admin_client.admin.command('replSetInitiate')
+            print("⚙️ [REPLICASET] Đã kích hoạt cấu hình Replica Set thành công.")
+            time.sleep(2)
+        except Exception as e:
+            # Nếu đã cấu hình từ trước, bỏ qua lỗi bảo vệ Idempotent
+            if "already initialized" not in str(e):
+                print(f"⚠️ Thống kê trạng thái Replica Set: {e}")
+
         client.admin.command('ping')
-        print("✅ MongoDB đang chạy!")
+        print("✅ Kết nối liên thông trục cơ sở dữ liệu MongoDB!")
     except Exception as e:
-        print(f"❌ Lỗi kết nối MongoDB. Đảm bảo Docker đã chạy. Chi tiết: {e}")
+        print(f"❌ Lỗi hạ tầng: Môi trường Docker chưa sẵn sàng. Chi tiết: {e}")
         return
 
-    print("🛠️ Bắt đầu khởi tạo Indexes (Giai đoạn 1)...")
-
-    # 1. OUTBOX EVENTS (Compound index cho Consumer Daemon)
-    db.outbox_events.create_indexes([
-        IndexModel([("status", ASCENDING), ("next_retry_at", ASCENDING)])
-    ])
-
-    # 2. RAW PRODUCTS (Tối ưu truy vấn T0)
-    db.raw_products.create_indexes([
-        IndexModel([("status", ASCENDING)]),
-        IndexModel([("created_at", DESCENDING)])
-    ])
-
-    # 3. STRATEGY REPORTS (Giai đoạn 1 chỉ có cái này)
-    db.strategy_reports.create_indexes([
-        IndexModel([("project_id", ASCENDING)]),
-        IndexModel([("status", ASCENDING)])
-    ])
-
-    # 4. TTL cho Budget Reservations (120s)
-    db.budget_reservations.create_indexes([
-        IndexModel([("created_at", ASCENDING)], expireAfterSeconds=120)
-    ])
-
-    # 5. TTL cho User Sessions (T0) - Redis xử lý chính, đây là backup
-    db.user_sessions.create_indexes([
-        IndexModel([("updated_at", ASCENDING)], expireAfterSeconds=1800)
-    ])
-
-    # 6. SOS QUEUE (Phân trang cursor-based)
-    db.sos_queue.create_indexes([
-        IndexModel([("status", ASCENDING), ("created_at", DESCENDING)])
-    ])
-
-    print("✅ Khởi tạo Database hoàn tất! (Tuân thủ tuyệt đối GĐ1)")
+    print("🛠️ Thiết lập hệ thống Index độc quyền cho Giai đoạn 1...")
+    db.outbox_events.create_indexes([IndexModel([("status", ASCENDING), ("next_retry_at", ASCENDING)])])
+    db.raw_products.create_indexes([IndexModel([("status", ASCENDING)]), IndexModel([("created_at", DESCENDING)])])
+    db.strategy_reports.create_indexes([IndexModel([("project_id", ASCENDING)]), IndexModel([("status", ASCENDING)])])
+    db.budget_reservations.create_indexes([IndexModel([("created_at", ASCENDING)], expireAfterSeconds=120)])
+    db.user_sessions.create_indexes([IndexModel([("updated_at", ASCENDING)], expireAfterSeconds=1800)])
+    db.sos_queue.create_indexes([IndexModel([("status", ASCENDING), ("created_at", DESCENDING)])])
+    print("🎉 MÔI TRƯỜNG CODESPACES ĐÃ SẴN SÀNG TRIỂN KHAI PHÁT TRIỂN CODE!")
 
 if __name__ == "__main__":
-    init_db()
+    init_codespace_db()
