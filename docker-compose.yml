@@ -1,6 +1,16 @@
 version: '3.8'
 
 services:
+  # Vùng chứa không gian làm việc Codespaces
+  codespace_env:
+    image: mcr.microsoft.com/devcontainers/python:3.10
+    volumes:
+      - .:/workspace:cached
+    network_mode: service:mongodb
+    depends_on:
+      - mongodb
+      - redis
+
   mongodb:
     image: mongo:6.0
     container_name: business_os_mongo
