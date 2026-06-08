@@ -1,0 +1,17 @@
+{
+    "name": "AI Business OS Codespace",
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "codespace_env",
+    "workspaceFolder": "/workspace",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "mongodb.mongodb-vscode"
+            ]
+        }
+    },
+    "postCreateCommand": "pip install -r requirements.txt && python bootstrap.py",
+    "remoteUser": "root"
+}
