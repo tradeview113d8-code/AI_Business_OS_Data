@@ -1,0 +1,15 @@
+pydantic==2.5.3
+crewai==0.30.0
+litellm
+mem0ai
+pymongo
+redis
+tiktoken
+json_repair
+pyTelegramBotAPI
+python-dotenv
+playwright
+beautifulsoup4
+trafilatura
+firecrawl-py
+google-search-results
