@@ -18,6 +18,8 @@ class StrategyGeneratorWorker(EventWorker):
         super().__init__("strategy_generator")
         # Chỉ lắng nghe sự kiện hoàn thành Phase 1 hoặc lệnh kích hoạt cưỡng bức từ Giám đốc
         self.interested_events = ["PHASE_1_COMPLETED", "FORCE_PHASE2_EARLY"]
+        # Đảm bảo model mặc định dùng OpenRouter
+        self.default_model = "openrouter/openai/gpt-4o-mini"
 
     def check_and_reserve_budget(self, project_id: str, cost_limit: float = 0.05) -> bool:
         """
@@ -88,9 +90,13 @@ class StrategyGeneratorWorker(EventWorker):
                 redis_client.delete(lock_key)
                 return
 
-            # Khôi phục thông tin cấu hình AI
+            # Khôi phục thông tin cấu hình AI - Đảm bảo dùng OpenRouter
             insights = p1_data.get("refined_insights", {})
-            model = raw_prod.get("model_assignment", "gpt-3.5-turbo")
+            model = raw_prod.get("model_assignment", self.default_model)
+            # Nếu model không phải openrouter, ép về openrouter để tránh lỗi key
+            if not model.startswith("openrouter/"):
+                print(f"⚠️ [STRATEGY] Model {model} không phải OpenRouter, chuyển về {self.default_model}")
+                model = self.default_model
 
             # Thiết lập Prompt tạo khung xương chiến lược kinh doanh thực chiến
             system_prompt = (
@@ -102,6 +108,7 @@ class StrategyGeneratorWorker(EventWorker):
             user_prompt = f"Insight nền tảng: {json.dumps(insights)}. Hãy thiết kế bản vẽ chiến lược kinh doanh."
 
             # Gọi LLM Router an toàn tích hợp json_repair tự vá lỗi cấu trúc
+            print(f"🧠 [STRATEGY] Gọi LLM với model: {model}")
             strategy_output = safe_llm_call(model, [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
